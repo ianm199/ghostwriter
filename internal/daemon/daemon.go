@@ -34,6 +34,7 @@ type Daemon struct {
 	store    *output.Store
 	socket   *Socket
 	meeting  *ActiveMeeting
+	done     chan struct{}
 }
 
 type ActiveMeeting struct {
@@ -65,6 +66,7 @@ func New() (*Daemon, error) {
 		whisper:  w,
 		store:    output.NewStore(outputDir),
 		socket:   sock,
+		done:     make(chan struct{}),
 	}, nil
 }
 
@@ -93,6 +95,12 @@ func (d *Daemon) Run() error {
 		case cmd := <-commands:
 			d.handleCommand(cmd)
 		case <-signals:
+			log.Println("shutting down")
+			if d.getState() == StateRecording {
+				d.stopRecording()
+			}
+			return nil
+		case <-d.done:
 			log.Println("shutting down")
 			if d.getState() == StateRecording {
 				d.stopRecording()
@@ -139,11 +147,8 @@ func (d *Daemon) handleCommand(cmd Command) {
 	case CmdStatus:
 		cmd.Reply <- d.statusResponse()
 	case CmdStop:
-		if d.getState() == StateRecording {
-			d.stopRecording()
-		}
 		cmd.Reply <- Response{OK: true}
-		os.Exit(0)
+		close(d.done)
 	}
 }
 

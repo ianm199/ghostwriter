@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ianmclaughlin/ghostwriter/internal/capture"
 	"github.com/ianmclaughlin/ghostwriter/internal/output"
@@ -123,7 +124,10 @@ func parseWhisperJSON(data []byte, language string) (*output.Transcript, error) 
 	}
 
 	t := &output.Transcript{
+		Version: "1.0",
+		ID:      output.GenerateID(),
 		Metadata: output.Metadata{
+			Date:     time.Now(),
 			Source:   "whisper-cpp",
 			Language: language,
 			Model:    wj.Model.Type,
@@ -166,6 +170,11 @@ func parseWhisperJSON(data []byte, language string) (*output.Transcript, error) 
 	}
 
 	t.FullText = fullText.String()
+
+	if len(t.Segments) > 0 {
+		t.Metadata.DurationSeconds = int(t.Segments[len(t.Segments)-1].End)
+	}
+
 	return t, nil
 }
 

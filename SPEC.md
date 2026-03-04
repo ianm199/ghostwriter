@@ -66,42 +66,41 @@ An open-source, local-first daemon that detects meetings, captures audio, transc
 
 ## Tech Stack
 
-### Core Daemon — Rust
+### Core Daemon — Go
 
-Rust is the right call here for a few reasons:
+Go is the right call here for a few reasons:
 
-- **System-level audio access.** You need to talk to CoreAudio (macOS), WASAPI (Windows), PulseAudio/PipeWire (Linux). Rust has solid bindings for all of these via `cpal` and platform-specific crates.
-- **Long-running background process.** Memory safety without a GC matters when this thing runs for 8+ hours a day. No random GC pauses, no memory leaks from a Python process slowly ballooning.
 - **Single binary distribution.** `brew install` or download a binary. No Python environment, no Node runtime, no Docker. This is critical for adoption.
-- **Cross-platform.** Rust's cross-compilation story is mature. One codebase, three platforms.
+- **Long-running background process.** Goroutines and channels are a natural fit for a daemon that juggles process monitoring, audio capture, and transcription concurrently.
+- **Cross-platform.** Go's cross-compilation story is mature. One codebase, three platforms.
+- **Pragmatic FFI-free approach.** Instead of binding directly to system audio APIs, the daemon shells out to FFmpeg for audio capture and whisper-cli for transcription. Fewer build dependencies, easier to package.
 
-Key crates:
-- `cpal` — cross-platform audio capture
-- `tray-item` or `tao` — system tray icon
-- `whisper-rs` — bindings to whisper.cpp (for bundled local transcription)
-- `tokio` — async runtime for the daemon, calendar polling, webhook delivery
-- `serde` — transcript serialization
-- `clap` — CLI interface
+Key dependencies:
+- `cobra` — CLI framework (`github.com/spf13/cobra`)
+- `encoding/json` — transcript serialization (stdlib)
+- `os/exec` — subprocess management for FFmpeg and whisper-cli (stdlib)
+- `net` — Unix domain socket IPC between CLI and daemon (stdlib)
+- FFmpeg — audio capture via avfoundation (macOS) with BlackHole virtual audio device
+- `whisper-cli` — local transcription via whisper.cpp command-line tool
 
 ### Transcription Engine — Pluggable
 
-The daemon should ship with `whisper.cpp` bundled (via `whisper-rs`) as the default, but the transcription layer should be a trait/interface:
+The daemon uses `whisper-cli` (the whisper.cpp command-line tool) as the default, but the transcription layer is a Go interface:
 
-```rust
-trait Transcriber {
-    async fn transcribe(&self, audio: &AudioSegment) -> Result<Transcript>;
+```go
+type Transcriber interface {
+    Transcribe(audio capture.AudioData) (*output.Transcript, error)
+    TranscribeFile(path string) (*output.Transcript, error)
+    Close() error
 }
 
-// Bundled
-struct WhisperCppTranscriber { /* model path, params */ }
+type WhisperCLITranscriber struct { /* model path, params */ }
 
-// Remote backends (behind feature flags)
-struct OpenAITranscriber { /* api key, model */ }
-struct DeepgramTranscriber { /* api key */ }
-struct GladiaTranscriber { /* api key */ }
+type OpenAITranscriber struct { /* api key, model */ }
+type DeepgramTranscriber struct { /* api key */ }
+type GladiaTranscriber struct { /* api key */ }
 
-// Power users
-struct CustomTranscriber { /* arbitrary HTTP endpoint */ }
+type CustomTranscriber struct { /* arbitrary HTTP endpoint */ }
 ```
 
 Default ships with `whisper-base.en` for speed. Users can download larger models (`whisper-large-v3`) for better accuracy. The CLI handles model management:
@@ -114,7 +113,7 @@ ghostwriter config set transcription.model large-v3
 
 ### Speaker Diarization
 
-This is the one area where pure Rust gets tricky. The best open-source diarization is `pyannote-audio`, which is Python/PyTorch. Options:
+This is the one area where pure Go gets tricky. The best open-source diarization is `pyannote-audio`, which is Python/PyTorch. Options:
 
 1. **Ship a small Python sidecar** that handles diarization only. The daemon sends audio segments over a local socket, gets back speaker labels. Optional — only starts if diarization is enabled.
 2. **Use whisper.cpp's built-in VAD + simple clustering** for basic "Speaker A / Speaker B" detection. Less accurate but zero dependencies.
@@ -124,23 +123,27 @@ Recommendation: Start with option 2 (good enough for most meetings), offer optio
 
 ### Meeting Detection
 
-```rust
-struct MeetingDetector {
-    process_monitor: ProcessMonitor,
-    calendar_source: Option<CalendarSource>,
-    audio_detector: AudioActivityDetector,
+```go
+type Detector struct {
+    processMonitor *ProcessMonitor
+    pollInterval   time.Duration
 }
 
-enum MeetingSignal {
-    ProcessStarted { app: String, pid: u32 },
-    CalendarEvent { title: String, start: DateTime, end: DateTime },
-    AudioActivity { confidence: f32 },
-    ManualTrigger,
+type SignalType int
+
+const (
+    SignalStarted SignalType = iota
+    SignalEnded
+)
+
+type Signal struct {
+    Type SignalType
+    App  string
 }
 ```
 
 **Process Monitor:**
-- macOS: Watch for process audio sessions via `AudioObjectGetPropertyData` / `AVAudioSession`
+- macOS: Polls running processes via `ps -eo comm` to detect known meeting apps
 - Windows: WASAPI session enumeration — detect when apps like Zoom/Teams acquire audio devices
 - Linux: PulseAudio/PipeWire client monitoring
 
@@ -176,28 +179,34 @@ Calendar gives you:
 
 ### Audio Capture
 
-```rust
-struct AudioCapture {
-    system_audio: SystemAudioStream,  // What you hear (the meeting)
-    mic_audio: Option<MicStream>,     // What you say
-    buffer: RingBuffer<f32>,
-    segment_duration: Duration,       // Default: 30s chunks for Whisper
+```go
+type AudioData struct {
+    Samples    []float32
+    SampleRate int
+    Channels   int
+}
+
+type Capture struct {
+    mu        sync.Mutex
+    recording bool
+    cmd       *exec.Cmd
+    wavPath   string
 }
 ```
 
-- Capture system audio (loopback) as the primary stream — this gets you all meeting participants
-- Optionally mix in mic audio for your own voice (some system audio setups don't include local mic)
-- Buffer in a ring buffer, flush 30-second segments to the transcription engine
+- Uses FFmpeg as a subprocess to capture system audio via the BlackHole virtual audio device
+- Captures at 16kHz mono WAV (optimal for Whisper input)
+- Writes to a temp file during recording, returns the path on stop
 - Save raw audio alongside transcripts (configurable — some users want recordings, some don't)
 
 Platform specifics:
-- **macOS:** Requires a virtual audio device (like BlackHole or the built-in ScreenCaptureKit API on macOS 13+). ScreenCaptureKit is the modern path — lets you capture app-specific audio without a virtual device.
-- **Windows:** WASAPI loopback capture is native and well-supported. Easiest platform for this.
-- **Linux:** PipeWire monitor sources or PulseAudio monitor. Straightforward.
+- **macOS:** FFmpeg with avfoundation input, capturing from BlackHole virtual audio device. Requires BlackHole installed and configured as part of an aggregate audio device.
+- **Windows:** WASAPI loopback capture via FFmpeg. Easiest platform for this.
+- **Linux:** PipeWire/PulseAudio monitor via FFmpeg. Straightforward.
 
 ### Configuration
 
-Single TOML file at `~/.config/ghostwriter/config.toml`:
+Single TOML file at `~/.config/ghostwriter/config.toml` (aspirational — current implementation has defaults hardcoded):
 
 ```toml
 [general]
@@ -406,22 +415,22 @@ This means any MCP-compatible client (Claude, Cursor, custom agents) can:
 ### macOS
 - Homebrew formula: `brew install ghostwriter`
 - Ships as universal binary (arm64 + x86_64)
-- ScreenCaptureKit for audio capture (macOS 13+)
-- Bundled `whisper.cpp` with Metal acceleration
-- Tray icon via native AppKit (via `objc` crate)
-- Needs permissions: Accessibility (for process monitoring), Screen Recording (for ScreenCaptureKit)
+- FFmpeg + BlackHole virtual audio device for audio capture
+- Transcription via `whisper-cli` with Metal acceleration
+- Tray icon via native AppKit
+- Needs permissions: Accessibility (for process monitoring), Microphone (for audio capture via BlackHole)
 
 ### Windows
 - `winget install ghostwriter` or MSI installer
-- WASAPI loopback for audio capture
-- Bundled `whisper.cpp` with DirectML or CUDA acceleration
+- WASAPI loopback for audio capture via FFmpeg
+- Transcription via `whisper-cli` with DirectML or CUDA acceleration
 - Tray icon via Win32 system tray API
 - No special permissions needed for audio loopback
 
 ### Linux
 - Flatpak or distro packages
-- PipeWire/PulseAudio monitor for audio capture
-- Bundled `whisper.cpp` with CUDA or CPU
+- PipeWire/PulseAudio monitor for audio capture via FFmpeg
+- Transcription via `whisper-cli` with CUDA or CPU
 - Tray icon via `libappindicator` or XDG tray protocol
 
 ### CI/CD
@@ -435,9 +444,9 @@ This means any MCP-compatible client (Claude, Cursor, custom agents) can:
 ## Development Phases
 
 ### Phase 1 — Core Loop (Weeks 1-4)
-- [ ] Daemon skeleton in Rust (start/stop, tray icon, config loading)
-- [ ] Audio capture on macOS (ScreenCaptureKit) — start with one platform
-- [ ] Whisper.cpp integration via `whisper-rs`
+- [ ] Daemon skeleton in Go (start/stop, tray icon, config loading)
+- [ ] Audio capture on macOS (FFmpeg + BlackHole) — start with one platform
+- [ ] Whisper.cpp integration via `whisper-cli`
 - [ ] Basic output pipeline (`.transcript.json`)
 - [ ] CLI: `ghostwriter start/stop/record/transcribe`
 - [ ] Manual trigger only (no auto-detection yet)
@@ -507,7 +516,7 @@ This means any MCP-compatible client (Claude, Cursor, custom agents) can:
 ## Open Questions
 
 1. **Name.** "Ghostwriter" is placeholder. Needs something that isn't already taken.
-2. **macOS audio capture permissions.** ScreenCaptureKit requires Screen Recording permission, which is a slightly confusing UX for an audio-only tool. Need to research if there's a cleaner path.
+2. **macOS audio capture permissions.** BlackHole requires setting up an aggregate audio device, which is a slightly confusing UX. Need to research if there's a cleaner path.
 3. **Browser meeting detection.** Knowing that Chrome is using the mic isn't quite enough to know it's Google Meet vs. a random website. Do we care? Probably not — if you're in a browser call, transcribe it.
 4. **Licensing.** MIT vs Apache 2.0. Leaning Apache 2.0 for patent protection.
 5. **Whisper model bundling.** The base model is ~150MB. Do we ship it in the binary or download on first run? First-run download is better for binary size but worse for "just works" experience.
