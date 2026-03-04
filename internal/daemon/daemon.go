@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ianmclaughlin/ghostwriter/internal/detect"
 	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
+	"github.com/ianmclaughlin/ghostwriter/pkg/sysaware"
 	"github.com/ianmclaughlin/ghostwriter/pkg/transcribe"
 )
 
@@ -27,7 +27,8 @@ const (
 type Daemon struct {
 	state    State
 	mu       sync.RWMutex
-	detector *detect.Detector
+	procs    sysaware.ProcessChecker
+	mic      sysaware.MicDetector
 	capture  *audiocapture.Recorder
 	whisper  transcribe.Transcriber
 	store    *transcribe.Store
@@ -65,13 +66,14 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	return &Daemon{
-		state:    StateIdle,
-		detector: detect.New(),
-		capture:  audiocapture.NewRecorder(),
-		whisper:  w,
-		store:    transcribe.NewStore(cfg.OutputDir),
-		socket:   sock,
-		done:     make(chan struct{}),
+		state:   StateIdle,
+		procs:   sysaware.NewDarwinProcessChecker(),
+		mic:     sysaware.NewDarwinMicDetector(),
+		capture: audiocapture.NewRecorder(),
+		whisper: w,
+		store:   transcribe.NewStore(cfg.OutputDir),
+		socket:  sock,
+		done:    make(chan struct{}),
 	}, nil
 }
 
@@ -88,7 +90,7 @@ func (d *Daemon) Run() error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
-	meetings := d.detector.Start(ctx)
+	meetings := startMeetingDetector(ctx, d.procs, d.mic)
 	commands := d.socket.Listen(ctx)
 
 	log.Println("ghostwriter daemon started")
@@ -115,15 +117,15 @@ func (d *Daemon) Run() error {
 	}
 }
 
-func (d *Daemon) handleMeetingSignal(signal detect.Signal) {
-	switch signal.Type {
-	case detect.SignalStarted:
+func (d *Daemon) handleMeetingSignal(sig Signal) {
+	switch sig.Type {
+	case SignalStarted:
 		if d.getState() == StateIdle {
-			if err := d.startRecording(signal.App); err != nil {
+			if err := d.startRecording(sig.App); err != nil {
 				log.Printf("auto-record failed: %v", err)
 			}
 		}
-	case detect.SignalEnded:
+	case SignalEnded:
 		if d.getState() == StateRecording {
 			d.stopRecording()
 		}
