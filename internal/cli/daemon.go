@@ -11,11 +11,11 @@ var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the ghostwriter daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := daemon.New()
+		d, err := daemon.New(daemon.Config{})
 		if err != nil {
 			return fmt.Errorf("failed to initialize daemon: %w", err)
 		}
-		return d.Run()
+		return d.Run(cmd.Context())
 	},
 }
 

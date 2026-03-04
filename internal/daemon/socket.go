@@ -41,12 +41,20 @@ type Socket struct {
 	path     string
 }
 
-func socketPath() string {
+func defaultSocketPath() string {
 	return filepath.Join(os.TempDir(), "ghostwriter.sock")
 }
 
+// NewSocket creates a socket at the default path.
 func NewSocket() (*Socket, error) {
-	path := socketPath()
+	return NewSocketAt("")
+}
+
+// NewSocketAt creates a socket at the given path. If path is empty, uses the default.
+func NewSocketAt(path string) (*Socket, error) {
+	if path == "" {
+		path = defaultSocketPath()
+	}
 	os.Remove(path)
 
 	listener, err := net.Listen("unix", path)
@@ -55,6 +63,11 @@ func NewSocket() (*Socket, error) {
 	}
 
 	return &Socket{listener: listener, path: path}, nil
+}
+
+// Path returns the socket's file path (useful for creating test clients).
+func (s *Socket) Path() string {
+	return s.path
 }
 
 // Listen accepts commands from CLI clients over the unix domain socket.
@@ -106,8 +119,17 @@ type Client struct {
 	conn net.Conn
 }
 
+// NewClient connects to the daemon socket at the default path.
 func NewClient() (*Client, error) {
-	conn, err := net.Dial("unix", socketPath())
+	return NewClientAt("")
+}
+
+// NewClientAt connects to the daemon socket at the given path.
+func NewClientAt(path string) (*Client, error) {
+	if path == "" {
+		path = defaultSocketPath()
+	}
+	conn, err := net.Dial("unix", path)
 	if err != nil {
 		return nil, err
 	}

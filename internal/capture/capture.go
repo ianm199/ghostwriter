@@ -9,12 +9,20 @@ import (
 	"sync"
 )
 
+// AudioCapturer is the interface for audio capture backends.
+type AudioCapturer interface {
+	Start() error
+	Stop() (wavPath string, err error)
+	IsRecording() bool
+}
+
 type AudioData struct {
 	Samples    []float32
 	SampleRate int
 	Channels   int
 }
 
+// Capture is the ffmpeg/BlackHole implementation of AudioCapturer.
 type Capture struct {
 	mu        sync.Mutex
 	recording bool

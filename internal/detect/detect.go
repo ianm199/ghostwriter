@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// MeetingDetector is the interface for meeting detection backends.
+type MeetingDetector interface {
+	Start(ctx context.Context) <-chan Signal
+}
+
 type SignalType int
 
 const (
@@ -17,6 +22,7 @@ type Signal struct {
 	App  string
 }
 
+// Detector is the process-polling implementation of MeetingDetector.
 type Detector struct {
 	processMonitor *ProcessMonitor
 	pollInterval   time.Duration
