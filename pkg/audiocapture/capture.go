@@ -1,5 +1,7 @@
 //go:build darwin
 
+// Package audiocapture provides system audio recording via FFmpeg and virtual
+// audio devices. Currently supports macOS with BlackHole loopback capture.
 package audiocapture
 
 import (

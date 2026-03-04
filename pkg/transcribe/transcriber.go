@@ -1,3 +1,5 @@
+// Package transcribe provides audio transcription via Whisper with structured
+// output, filesystem storage, and full-text search.
 package transcribe
 
 import "github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
