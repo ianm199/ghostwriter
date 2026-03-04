@@ -35,9 +35,10 @@ func New() *Detector {
 }
 
 // Start begins watching for meeting signals and returns a channel of events.
-// Native meeting apps trigger immediately. Browser apps require the microphone
-// to be active for 2 consecutive polls (10 seconds) before triggering, which
-// filters out transient mic access like permission prompts.
+// Meeting-specific processes (CptHost, WebexAppLauncher) trigger immediately.
+// Always-running apps and browsers require the microphone to be active for 2
+// consecutive polls (10 seconds) before triggering, filtering out transient
+// mic access like permission prompts.
 func (d *Detector) Start(ctx context.Context) <-chan Signal {
 	signals := make(chan Signal, 4)
 
@@ -45,7 +46,7 @@ func (d *Detector) Start(ctx context.Context) <-chan Signal {
 		defer close(signals)
 
 		var activeMeeting string
-		var activeMeetingIsBrowser bool
+		var activeMeetingNeedsMic bool
 		var micActiveCount int
 		var micInactiveCount int
 
@@ -61,9 +62,9 @@ func (d *Detector) Start(ctx context.Context) <-chan Signal {
 				micActive := d.micMonitor.IsMicActive()
 
 				if activeMeeting == "" {
-					d.handleNoActiveMeeting(app, micActive, &micActiveCount, &activeMeeting, &activeMeetingIsBrowser, signals)
+					d.handleNoActiveMeeting(app, micActive, &micActiveCount, &activeMeeting, &activeMeetingNeedsMic, signals)
 				} else {
-					d.handleActiveMeeting(app, micActive, &micInactiveCount, &activeMeeting, &activeMeetingIsBrowser, &micActiveCount, signals)
+					d.handleActiveMeeting(app, micActive, &micInactiveCount, &activeMeeting, &activeMeetingNeedsMic, &micActiveCount, signals)
 				}
 			}
 		}
@@ -77,7 +78,7 @@ func (d *Detector) handleNoActiveMeeting(
 	micActive bool,
 	micActiveCount *int,
 	activeMeeting *string,
-	activeMeetingIsBrowser *bool,
+	activeMeetingNeedsMic *bool,
 	signals chan<- Signal,
 ) {
 	if app.Name == "" {
@@ -85,12 +86,12 @@ func (d *Detector) handleNoActiveMeeting(
 		return
 	}
 
-	if !app.IsBrowser {
+	if !app.NeedsMic {
 		*activeMeeting = app.Name
-		*activeMeetingIsBrowser = false
+		*activeMeetingNeedsMic = false
 		*micActiveCount = 0
 		signals <- Signal{Type: SignalStarted, App: app.Name}
-		log.Printf("meeting detected (native app): %s", app.Name)
+		log.Printf("meeting detected (meeting process): %s", app.Name)
 		return
 	}
 
@@ -102,10 +103,10 @@ func (d *Detector) handleNoActiveMeeting(
 	*micActiveCount++
 	if *micActiveCount >= micDebounceThreshold {
 		*activeMeeting = app.Name
-		*activeMeetingIsBrowser = true
+		*activeMeetingNeedsMic = true
 		*micActiveCount = 0
 		signals <- Signal{Type: SignalStarted, App: app.Name}
-		log.Printf("meeting detected (browser + mic): %s", app.Name)
+		log.Printf("meeting detected (app + mic): %s", app.Name)
 	}
 }
 
@@ -114,7 +115,7 @@ func (d *Detector) handleActiveMeeting(
 	micActive bool,
 	micInactiveCount *int,
 	activeMeeting *string,
-	activeMeetingIsBrowser *bool,
+	activeMeetingNeedsMic *bool,
 	micActiveCount *int,
 	signals chan<- Signal,
 ) {
@@ -122,7 +123,7 @@ func (d *Detector) handleActiveMeeting(
 
 	if app.Name == "" {
 		ended = true
-	} else if *activeMeetingIsBrowser && !micActive {
+	} else if *activeMeetingNeedsMic && !micActive {
 		*micInactiveCount++
 		if *micInactiveCount >= micDebounceThreshold {
 			ended = true
@@ -135,7 +136,7 @@ func (d *Detector) handleActiveMeeting(
 		log.Printf("meeting ended: %s", *activeMeeting)
 		signals <- Signal{Type: SignalEnded, App: *activeMeeting}
 		*activeMeeting = ""
-		*activeMeetingIsBrowser = false
+		*activeMeetingNeedsMic = false
 		*micActiveCount = 0
 		*micInactiveCount = 0
 	}
