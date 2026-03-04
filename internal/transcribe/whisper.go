@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ianmclaughlin/ghostwriter/internal/capture"
 	"github.com/ianmclaughlin/ghostwriter/internal/output"
+	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
 )
 
 type WhisperConfig struct {
@@ -45,8 +45,8 @@ func NewWhisperTranscriber(config WhisperConfig) (*WhisperTranscriber, error) {
 	return &WhisperTranscriber{config: config, binaryPath: binaryPath}, nil
 }
 
-func (w *WhisperTranscriber) Transcribe(audio capture.AudioData) (*output.Transcript, error) {
-	tmpFile, err := os.CreateTemp("", "ghostwriter-*.wav")
+func (w *WhisperTranscriber) Transcribe(audio audiocapture.AudioData) (*output.Transcript, error) {
+	tmpFile, err := os.CreateTemp("", "whisper-*.wav")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp WAV file: %w", err)
 	}

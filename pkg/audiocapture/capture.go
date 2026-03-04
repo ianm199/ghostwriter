@@ -1,4 +1,6 @@
-package capture
+//go:build darwin
+
+package audiocapture
 
 import (
 	"bufio"
@@ -9,28 +11,34 @@ import (
 	"sync"
 )
 
+type AudioRecorder interface {
+	Start() error
+	Stop() (string, error)
+	IsRecording() bool
+}
+
 type AudioData struct {
 	Samples    []float32
 	SampleRate int
 	Channels   int
 }
 
-type Capture struct {
+type Recorder struct {
 	mu        sync.Mutex
 	recording bool
 	cmd       *exec.Cmd
 	wavPath   string
 }
 
-func New() *Capture {
-	return &Capture{}
+func NewRecorder() *Recorder {
+	return &Recorder{}
 }
 
-func (c *Capture) Start() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (r *Recorder) Start() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	if c.recording {
+	if r.recording {
 		return fmt.Errorf("already recording")
 	}
 
@@ -39,46 +47,46 @@ func (c *Capture) Start() error {
 		return fmt.Errorf("failed to find BlackHole audio device: %w", err)
 	}
 
-	tmpFile, err := os.CreateTemp("", "ghostwriter-capture-*.wav")
+	tmpFile, err := os.CreateTemp("", "audiocapture-*.wav")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpFile.Close()
-	c.wavPath = tmpFile.Name()
+	r.wavPath = tmpFile.Name()
 
-	c.cmd = exec.Command("ffmpeg",
+	r.cmd = exec.Command("ffmpeg",
 		"-f", "avfoundation",
 		"-i", ":"+deviceIndex,
 		"-ar", "16000",
 		"-ac", "1",
 		"-y",
-		c.wavPath,
+		r.wavPath,
 	)
 
-	if err := c.cmd.Start(); err != nil {
-		os.Remove(c.wavPath)
+	if err := r.cmd.Start(); err != nil {
+		os.Remove(r.wavPath)
 		return fmt.Errorf("failed to start ffmpeg: %w", err)
 	}
 
-	c.recording = true
+	r.recording = true
 	return nil
 }
 
-func (c *Capture) Stop() (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (r *Recorder) Stop() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	if !c.recording {
+	if !r.recording {
 		return "", fmt.Errorf("not recording")
 	}
 
-	c.cmd.Process.Signal(os.Interrupt)
-	c.cmd.Wait()
+	r.cmd.Process.Signal(os.Interrupt)
+	r.cmd.Wait()
 
-	c.recording = false
-	path := c.wavPath
-	c.cmd = nil
-	c.wavPath = ""
+	r.recording = false
+	path := r.wavPath
+	r.cmd = nil
+	r.wavPath = ""
 
 	info, err := os.Stat(path)
 	if err != nil || info.Size() < 44 {
@@ -89,10 +97,10 @@ func (c *Capture) Stop() (string, error) {
 	return path, nil
 }
 
-func (c *Capture) IsRecording() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.recording
+func (r *Recorder) IsRecording() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recording
 }
 
 func resolveBlackHoleDevice() (string, error) {

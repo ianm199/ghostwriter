@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ianmclaughlin/ghostwriter/internal/capture"
 	"github.com/ianmclaughlin/ghostwriter/internal/detect"
 	"github.com/ianmclaughlin/ghostwriter/internal/output"
 	"github.com/ianmclaughlin/ghostwriter/internal/transcribe"
+	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
 )
 
 type State string
@@ -29,7 +29,7 @@ type Daemon struct {
 	state    State
 	mu       sync.RWMutex
 	detector *detect.Detector
-	capture  *capture.Capture
+	capture  *audiocapture.Recorder
 	whisper  transcribe.Transcriber
 	store    *output.Store
 	socket   *Socket
@@ -62,7 +62,7 @@ func New() (*Daemon, error) {
 	return &Daemon{
 		state:    StateIdle,
 		detector: detect.New(),
-		capture:  capture.New(),
+		capture:  audiocapture.NewRecorder(),
 		whisper:  w,
 		store:    output.NewStore(outputDir),
 		socket:   sock,
