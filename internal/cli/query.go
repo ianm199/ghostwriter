@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ianmclaughlin/ghostwriter/internal/output"
+	"github.com/ianmclaughlin/ghostwriter/pkg/transcribe"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +14,7 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List recent transcripts",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store := output.NewStore(output.DefaultOutputDir())
+		store := transcribe.NewStore(defaultOutputDir())
 
 		var since time.Time
 		if listSince != "" {
@@ -51,7 +51,7 @@ var showCmd = &cobra.Command{
 	Short: "Print transcript text",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store := output.NewStore(output.DefaultOutputDir())
+		store := transcribe.NewStore(defaultOutputDir())
 		transcript, err := store.Get(args[0])
 		if err != nil {
 			return err
@@ -66,7 +66,7 @@ var searchCmd = &cobra.Command{
 	Short: "Search across all transcripts",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store := output.NewStore(output.DefaultOutputDir())
+		store := transcribe.NewStore(defaultOutputDir())
 		results, err := store.Search(args[0])
 		if err != nil {
 			return err

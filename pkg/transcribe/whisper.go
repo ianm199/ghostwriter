@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ianmclaughlin/ghostwriter/internal/output"
 	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
 )
 
@@ -32,20 +31,20 @@ func NewWhisperTranscriber(config WhisperConfig) (*WhisperTranscriber, error) {
 	}
 
 	if config.ModelPath == "" {
-		config.ModelPath = defaultModelPath()
+		return nil, fmt.Errorf("WhisperConfig.ModelPath is required")
 	}
 	if config.Language == "" {
 		config.Language = "en"
 	}
 
 	if _, err := os.Stat(config.ModelPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("whisper model not found at %s — run 'ghostwriter models download base.en'", config.ModelPath)
+		return nil, fmt.Errorf("whisper model not found at %s", config.ModelPath)
 	}
 
 	return &WhisperTranscriber{config: config, binaryPath: binaryPath}, nil
 }
 
-func (w *WhisperTranscriber) Transcribe(audio audiocapture.AudioData) (*output.Transcript, error) {
+func (w *WhisperTranscriber) Transcribe(audio audiocapture.AudioData) (*Transcript, error) {
 	tmpFile, err := os.CreateTemp("", "whisper-*.wav")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp WAV file: %w", err)
@@ -62,7 +61,7 @@ func (w *WhisperTranscriber) Transcribe(audio audiocapture.AudioData) (*output.T
 	return w.TranscribeFile(tmpPath)
 }
 
-func (w *WhisperTranscriber) TranscribeFile(path string) (*output.Transcript, error) {
+func (w *WhisperTranscriber) TranscribeFile(path string) (*Transcript, error) {
 	outputPrefix := strings.TrimSuffix(path, filepath.Ext(path))
 
 	cmd := exec.Command(w.binaryPath,
@@ -117,16 +116,16 @@ type whisperToken struct {
 	P float64 `json:"p"`
 }
 
-func parseWhisperJSON(data []byte, language string) (*output.Transcript, error) {
+func parseWhisperJSON(data []byte, language string) (*Transcript, error) {
 	var wj whisperJSON
 	if err := json.Unmarshal(data, &wj); err != nil {
 		return nil, fmt.Errorf("failed to parse whisper JSON: %w", err)
 	}
 
-	t := &output.Transcript{
+	t := &Transcript{
 		Version: "1.0",
-		ID:      output.GenerateID(),
-		Metadata: output.Metadata{
+		ID:      GenerateID(),
+		Metadata: Metadata{
 			Date:     time.Now(),
 			Source:   "whisper-cpp",
 			Language: language,
@@ -139,14 +138,14 @@ func parseWhisperJSON(data []byte, language string) (*output.Transcript, error) 
 		startSec := float64(seg.Offsets.From) / 1000.0
 		endSec := float64(seg.Offsets.To) / 1000.0
 
-		segment := output.Segment{
+		segment := Segment{
 			Start: startSec,
 			End:   endSec,
 			Text:  strings.TrimSpace(seg.Text),
 		}
 
 		for _, tok := range seg.Tokens {
-			segment.Words = append(segment.Words, output.Word{
+			segment.Words = append(segment.Words, Word{
 				Word:       tok.Text,
 				Start:      float64(tok.Offsets.From) / 1000.0,
 				End:        float64(tok.Offsets.To) / 1000.0,
@@ -210,9 +209,4 @@ func writeWAV(f *os.File, samples []float32, sampleRate int) error {
 
 	_, err := f.Write(pcm)
 	return err
-}
-
-func defaultModelPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "ghostwriter", "models", "ggml-base.en.bin")
 }

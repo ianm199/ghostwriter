@@ -1,4 +1,4 @@
-package output
+package transcribe
 
 import (
 	"encoding/json"
@@ -24,12 +24,6 @@ func NewStore(dir string) *Store {
 	return &Store{dir: dir}
 }
 
-func DefaultOutputDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Documents", "Ghostwriter")
-}
-
-// Write persists a transcript to disk in the year/month directory structure.
 func (s *Store) Write(t *Transcript) error {
 	t.Version = "1.0"
 
@@ -49,7 +43,6 @@ func (s *Store) Write(t *Transcript) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// WriteTranscript writes a transcript to a specific path.
 func WriteTranscript(t *Transcript, path string) error {
 	t.Version = "1.0"
 	data, err := json.MarshalIndent(t, "", "  ")
@@ -59,7 +52,6 @@ func WriteTranscript(t *Transcript, path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// Get loads a transcript by ID.
 func (s *Store) Get(id string) (*Transcript, error) {
 	path, err := s.findByID(id)
 	if err != nil {
@@ -68,7 +60,6 @@ func (s *Store) Get(id string) (*Transcript, error) {
 	return s.readFile(path)
 }
 
-// List returns transcripts, optionally filtered by date.
 func (s *Store) List(since time.Time) ([]*Transcript, error) {
 	var results []*Transcript
 
@@ -103,7 +94,6 @@ func (s *Store) List(since time.Time) ([]*Transcript, error) {
 	return results, nil
 }
 
-// Search does a simple substring match across transcript full text.
 func (s *Store) Search(query string) ([]SearchResult, error) {
 	query = strings.ToLower(query)
 	var results []SearchResult

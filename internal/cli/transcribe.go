@@ -3,8 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/ianmclaughlin/ghostwriter/internal/output"
-	"github.com/ianmclaughlin/ghostwriter/internal/transcribe"
+	"github.com/ianmclaughlin/ghostwriter/pkg/transcribe"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +14,9 @@ var transcribeCmd = &cobra.Command{
 	Short: "Transcribe an audio file (standalone, no daemon needed)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{})
+		w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{
+			ModelPath: defaultModelPath(),
+		})
 		if err != nil {
 			return fmt.Errorf("failed to initialize whisper: %w", err)
 		}
@@ -31,7 +32,7 @@ var transcribeCmd = &cobra.Command{
 			dest = args[0] + ".transcript.json"
 		}
 
-		if err := output.WriteTranscript(transcript, dest); err != nil {
+		if err := transcribe.WriteTranscript(transcript, dest); err != nil {
 			return fmt.Errorf("failed to write transcript: %w", err)
 		}
 

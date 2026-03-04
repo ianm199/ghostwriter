@@ -1,4 +1,4 @@
-package output
+package transcribe
 
 import (
 	"crypto/rand"
@@ -7,12 +7,12 @@ import (
 )
 
 type Transcript struct {
-	Version  string   `json:"version"`
-	ID       string   `json:"id"`
-	Metadata Metadata `json:"metadata"`
+	Version  string    `json:"version"`
+	ID       string    `json:"id"`
+	Metadata Metadata  `json:"metadata"`
 	Speakers []Speaker `json:"speakers"`
 	Segments []Segment `json:"segments"`
-	FullText string   `json:"full_text"`
+	FullText string    `json:"full_text"`
 }
 
 type Metadata struct {

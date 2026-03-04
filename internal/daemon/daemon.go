@@ -12,9 +12,8 @@ import (
 	"time"
 
 	"github.com/ianmclaughlin/ghostwriter/internal/detect"
-	"github.com/ianmclaughlin/ghostwriter/internal/output"
-	"github.com/ianmclaughlin/ghostwriter/internal/transcribe"
 	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
+	"github.com/ianmclaughlin/ghostwriter/pkg/transcribe"
 )
 
 type State string
@@ -31,7 +30,7 @@ type Daemon struct {
 	detector *detect.Detector
 	capture  *audiocapture.Recorder
 	whisper  transcribe.Transcriber
-	store    *output.Store
+	store    *transcribe.Store
 	socket   *Socket
 	meeting  *ActiveMeeting
 	done     chan struct{}
@@ -43,13 +42,19 @@ type ActiveMeeting struct {
 	StartedAt time.Time
 }
 
-func New() (*Daemon, error) {
-	outputDir := output.DefaultOutputDir()
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+type Config struct {
+	OutputDir string
+	ModelPath string
+}
+
+func New(cfg Config) (*Daemon, error) {
+	if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{})
+	w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{
+		ModelPath: cfg.ModelPath,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize whisper: %w", err)
 	}
@@ -64,7 +69,7 @@ func New() (*Daemon, error) {
 		detector: detect.New(),
 		capture:  audiocapture.NewRecorder(),
 		whisper:  w,
-		store:    output.NewStore(outputDir),
+		store:    transcribe.NewStore(cfg.OutputDir),
 		socket:   sock,
 		done:     make(chan struct{}),
 	}, nil
@@ -160,7 +165,7 @@ func (d *Daemon) startRecording(title string) error {
 		return fmt.Errorf("failed to start capture: %w", err)
 	}
 
-	id := output.GenerateID()
+	id := transcribe.GenerateID()
 	d.meeting = &ActiveMeeting{
 		ID:        id,
 		Title:     title,
