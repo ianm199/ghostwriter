@@ -2,6 +2,7 @@ package capture
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,7 +25,7 @@ type AudioData struct {
 
 // Capture is the ffmpeg/BlackHole implementation of AudioCapturer.
 type Capture struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	recording bool
 	cmd       *exec.Cmd
 	wavPath   string
@@ -39,7 +40,7 @@ func (c *Capture) Start() error {
 	defer c.mu.Unlock()
 
 	if c.recording {
-		return fmt.Errorf("already recording")
+		return errors.New("already recording")
 	}
 
 	deviceIndex, err := resolveBlackHoleDevice()
@@ -77,11 +78,11 @@ func (c *Capture) Stop() (string, error) {
 	defer c.mu.Unlock()
 
 	if !c.recording {
-		return "", fmt.Errorf("not recording")
+		return "", errors.New("not recording")
 	}
 
-	c.cmd.Process.Signal(os.Interrupt)
-	c.cmd.Wait()
+	_ = c.cmd.Process.Signal(os.Interrupt)
+	_ = c.cmd.Wait()
 
 	c.recording = false
 	path := c.wavPath
@@ -91,15 +92,15 @@ func (c *Capture) Stop() (string, error) {
 	info, err := os.Stat(path)
 	if err != nil || info.Size() < 44 {
 		os.Remove(path)
-		return "", fmt.Errorf("capture produced no audio data")
+		return "", errors.New("capture produced no audio data")
 	}
 
 	return path, nil
 }
 
 func (c *Capture) IsRecording() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.recording
 }
 
@@ -132,5 +133,5 @@ func resolveBlackHoleDevice() (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("BlackHole audio device not found — install BlackHole and configure an aggregate audio device")
+	return "", errors.New("BlackHole audio device not found — install BlackHole and configure an aggregate audio device")
 }

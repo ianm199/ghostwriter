@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -75,8 +76,14 @@ func (s *Socket) Listen(ctx context.Context) <-chan Command {
 	commands := make(chan Command, 8)
 
 	go func() {
-		defer s.listener.Close()
+		defer close(commands)
 		defer os.Remove(s.path)
+
+		// Close listener when context is cancelled to unblock Accept.
+		go func() {
+			<-ctx.Done()
+			s.listener.Close()
+		}()
 
 		for {
 			conn, err := s.listener.Accept()
@@ -111,7 +118,7 @@ func (s *Socket) handleConnection(conn net.Conn, commands chan<- Command) {
 	commands <- Command{Type: req.Type, Title: req.Title, Reply: reply}
 
 	resp := <-reply
-	json.NewEncoder(conn).Encode(resp)
+	_ = json.NewEncoder(conn).Encode(resp)
 }
 
 // Client connects to the daemon's control socket.
@@ -163,7 +170,7 @@ func (c *Client) StartRecording(title string) error {
 		return err
 	}
 	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }
@@ -174,7 +181,7 @@ func (c *Client) StopRecording() error {
 		return err
 	}
 	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }
@@ -193,7 +200,7 @@ func (c *Client) Stop() error {
 		return err
 	}
 	if !resp.OK {
-		return fmt.Errorf("%s", resp.Error)
+		return errors.New(resp.Error)
 	}
 	return nil
 }

@@ -115,6 +115,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigs)
 
 	meetings := d.detector.Start(ctx)
 	commands := d.socket.Listen(ctx)

@@ -3,6 +3,7 @@ package transcribe
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -27,7 +28,7 @@ type WhisperTranscriber struct {
 func NewWhisperTranscriber(config WhisperConfig) (*WhisperTranscriber, error) {
 	binaryPath, err := exec.LookPath("whisper-cli")
 	if err != nil {
-		return nil, fmt.Errorf("whisper-cli not found in PATH — install with 'brew install whisper-cpp'")
+		return nil, errors.New("whisper-cli not found in PATH — install with 'brew install whisper-cpp'")
 	}
 
 	if config.ModelPath == "" {
