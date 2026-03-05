@@ -1,14 +1,26 @@
-# Ghostwriter — Meeting Transcription Daemon
+# Ghostwriter — Desktop Audio Toolkit
 
-*"The `ffmpeg` of meeting transcription."*
+*"The `ffmpeg` of desktop audio intelligence."*
 
-An open-source, local-first daemon that detects meetings, captures audio, transcribes via Whisper, and outputs structured transcript files. No cloud, no bots, no UI required.
+An open-source, local-first toolkit for capturing system audio, detecting application state, and transcribing speech — packaged as importable Go libraries. Ships with a meeting transcription daemon as a concrete, batteries-included use case.
+
+---
+
+## Project Structure
+
+Ghostwriter is two things:
+
+1. **`pkg/` — Reusable Go libraries** for desktop audio capture, process/microphone awareness, and local transcription. These are the building blocks. Import them into your own project and build whatever you want: a podcast recorder, a voice journal, an accessibility tool, a lecture transcriber.
+
+2. **`cmd/ghostwriter` + `internal/` — A meeting transcription daemon** built on top of those libraries. This is the reference implementation and the thing most people will use directly. It detects meetings, records audio, transcribes via Whisper, and writes structured transcript files.
+
+The libraries are the product. The daemon is the proof that they work.
 
 ---
 
 ## Design Philosophy
 
-- **Daemon, not an app.** Runs in the background. Tray icon for status. No Electron, no browser window, no "meeting viewer."
+- **Libraries first, app second.** The core primitives (`audiocapture`, `sysaware`, `transcribe`) are public packages with clean interfaces. The meeting daemon is just one consumer of them.
 - **Files as the interface.** Transcripts are `.json` files on disk. Grep them, git them, pipe them into whatever you want.
 - **Composable by default.** The daemon does capture + transcription. Everything else (summarization, search, UI) is someone else's problem — or yours, via plugins/MCP.
 - **Zero-config start, deep-config later.** `brew install ghostwriter && ghostwriter start` should just work. Power users can swap models, point at remote APIs, customize output formats.
@@ -18,69 +30,67 @@ An open-source, local-first daemon that detects meetings, captures audio, transc
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Ghostwriter Daemon              │
-│                                                  │
-│  ┌──────────────┐    ┌────────────────────────┐  │
-│  │   Detector    │───▶│    Audio Capture       │  │
-│  │              │    │                        │  │
-│  │ • Process    │    │ • System audio (WASAPI/ │  │
-│  │   monitor    │    │   CoreAudio/PulseAudio) │  │
-│  │ • Calendar   │    │ • Optional mic input    │  │
-│  │   polling    │    │ • WAV buffer → segments │  │
-│  │ • Manual     │    └───────────┬────────────┘  │
-│  │   trigger    │                │               │
-│  └──────────────┘                ▼               │
-│                       ┌──────────────────────┐   │
-│                       │   Transcription      │   │
-│                       │                      │   │
-│                       │ • Local: whisper.cpp  │   │
-│                       │ • Local: faster-      │   │
-│                       │   whisper             │   │
-│                       │ • Remote: OpenAI /    │   │
-│                       │   Deepgram / Gladia   │   │
-│                       └──────────┬───────────┘   │
-│                                  │               │
-│                                  ▼               │
-│                       ┌──────────────────────┐   │
-│                       │   Output Pipeline     │   │
-│                       │                      │   │
-│                       │ • .transcript.json   │   │
-│                       │ • Optional: .srt,    │   │
-│                       │   .txt, .md          │   │
-│                       │ • Webhook / callback │   │
-│                       └──────────────────────┘   │
-│                                                  │
-│  ┌──────────────────────────────────────────┐    │
-│  │            MCP Server                    │    │
-│  │                                          │    │
-│  │ • list_transcripts(date?, query?)        │    │
-│  │ • get_transcript(id)                     │    │
-│  │ • search_transcripts(query)              │    │
-│  │ • get_meeting_context(meeting_id)        │    │
-│  └──────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────┘
+pkg/ — Reusable Libraries (import into your own project)
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  audiocapture/          sysaware/          transcribe/  │
+│  ┌───────────────┐     ┌──────────────┐  ┌───────────┐ │
+│  │ AudioRecorder  │     │ProcessChecker│  │Transcriber│ │
+│  │               │     │MicDetector   │  │Transcript │ │
+│  │ • SCKit       │     │              │  │Store      │ │
+│  │ • BlackHole   │     │ • Darwin     │  │           │ │
+│  │ • (WASAPI)    │     │ • (Windows)  │  │ • Whisper │ │
+│  │ • (PipeWire)  │     │ • (Linux)    │  │ • (Remote)│ │
+│  └───────────────┘     └──────────────┘  └───────────┘ │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+
+cmd/ghostwriter + internal/ — Meeting Daemon (one consumer of pkg/)
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  Detector → Audio Capture → Transcription → Output      │
+│                                                         │
+│  • Process monitor + mic state → meeting detection      │
+│  • Calendar polling (planned)                           │
+│  • .transcript.json with segments, speakers, metadata   │
+│  • MCP server for AI agent access (planned)             │
+│  • Floating widget for status/control                   │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
 ```
+
+### What You Can Build With pkg/
+
+The libraries are designed to be used independently:
+
+```go
+import "github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
+import "github.com/ianmclaughlin/ghostwriter/pkg/sysaware"
+import "github.com/ianmclaughlin/ghostwriter/pkg/transcribe"
+```
+
+- **Podcast recorder** — `audiocapture` to grab system audio, `transcribe` to generate show notes
+- **Voice journal** — `audiocapture` + `transcribe` on a cron, append to a markdown file
+- **Accessibility tool** — real-time `sysaware` mic detection + `transcribe` for live captions
+- **Lecture transcriber** — `audiocapture` for a 2-hour recording, `transcribe` with a large model
+- **Meeting bot** — exactly what `cmd/ghostwriter` does, but you'd wire it differently
 
 ---
 
 ## Tech Stack
 
-### Core Daemon — Go
+### Why Go
 
-Go is the right call here for a few reasons:
-
-- **Single binary distribution.** `brew install` or download a binary. No Python environment, no Node runtime, no Docker. This is critical for adoption.
+- **Single binary distribution.** `brew install` or download a binary. No Python environment, no Node runtime, no Docker. This is critical for adoption — both for the daemon and for anyone importing the libraries.
 - **Long-running background process.** Goroutines and channels are a natural fit for a daemon that juggles process monitoring, audio capture, and transcription concurrently.
 - **Cross-platform.** Go's cross-compilation story is mature. One codebase, three platforms.
-- **Pragmatic FFI-free approach.** Instead of binding directly to system audio APIs, the daemon shells out to FFmpeg for audio capture and whisper-cli for transcription. Fewer build dependencies, easier to package.
+- **cgo for native APIs.** ScreenCaptureKit (macOS audio capture), CoreAudio (mic detection), and AppKit (floating widget) are accessed via cgo with Objective-C bridges. The cgo boundary is contained within `pkg/` so consumers don't need to think about it.
 
 Key dependencies:
 - `cobra` — CLI framework (`github.com/spf13/cobra`)
 - `encoding/json` — transcript serialization (stdlib)
-- `os/exec` — subprocess management for FFmpeg and whisper-cli (stdlib)
+- `os/exec` — subprocess management for whisper-cli (stdlib)
 - `net` — Unix domain socket IPC between CLI and daemon (stdlib)
-- FFmpeg — audio capture via avfoundation (macOS) with BlackHole virtual audio device
 - `whisper-cli` — local transcription via whisper.cpp command-line tool
 
 ### Transcription Engine — Pluggable
@@ -177,32 +187,27 @@ Calendar gives you:
 - Meeting title + attendees as transcript metadata
 - Auto-stop when the event ends (with a grace period for meetings that run over)
 
-### Audio Capture
+### Audio Capture (`pkg/audiocapture`)
 
 ```go
-type AudioData struct {
-    Samples    []float32
-    SampleRate int
-    Channels   int
-}
-
-type Capture struct {
-    mu        sync.Mutex
-    recording bool
-    cmd       *exec.Cmd
-    wavPath   string
+type AudioRecorder interface {
+    Start(target CaptureTarget) error
+    Stop() (string, error)
+    IsRecording() bool
 }
 ```
 
-- Uses FFmpeg as a subprocess to capture system audio via the BlackHole virtual audio device
-- Captures at 16kHz mono WAV (optimal for Whisper input)
-- Writes to a temp file during recording, returns the path on stop
-- Save raw audio alongside transcripts (configurable — some users want recordings, some don't)
+Two backends, auto-detected:
 
-Platform specifics:
-- **macOS:** FFmpeg with avfoundation input, capturing from BlackHole virtual audio device. Requires BlackHole installed and configured as part of an aggregate audio device.
-- **Windows:** WASAPI loopback capture via FFmpeg. Easiest platform for this.
-- **Linux:** PipeWire/PulseAudio monitor via FFmpeg. Straightforward.
+- **SCKit (default on macOS 12.3+):** Native ScreenCaptureKit via cgo/Objective-C. Zero external dependencies. Can target a specific app by name or capture all system audio. Requires Screen Recording permission.
+- **BlackHole (fallback):** FFmpeg capturing from BlackHole virtual audio device. Requires BlackHole installed and configured as an aggregate audio device.
+
+Both produce 16kHz mono WAV files optimized for Whisper input. The SCKit backend captures at 48kHz stereo natively and resamples down.
+
+Platform roadmap:
+- **macOS:** SCKit (done) + BlackHole fallback (done)
+- **Windows:** WASAPI loopback capture
+- **Linux:** PipeWire/PulseAudio monitor
 
 ### Configuration
 
@@ -502,6 +507,8 @@ This means any MCP-compatible client (Claude, Cursor, custom agents) can:
 
 ## Competitive Landscape
 
+Every existing tool in this space is a monolithic app. Ghostwriter is a toolkit that ships with an app.
+
 | Tool | Approach | Limitation |
 |------|----------|------------|
 | Otter.ai | Cloud SaaS | No self-hosting, data leaves your machine |
@@ -509,14 +516,15 @@ This means any MCP-compatible client (Claude, Cursor, custom agents) can:
 | Meetily | Open source desktop app | Monolithic, early stage, tries to do too much |
 | Scriberr | Self-hosted web app | Needs Docker, no auto-detection, manual upload |
 | Vexa | Open source meeting API | Focused on bot-joins-meeting model, complex infra |
-| **Ghostwriter** | Local daemon + files | Just capture + transcribe. Does one thing well. |
+| **Ghostwriter** | **Toolkit + daemon** | Libraries for audio capture, system awareness, transcription. Meeting daemon is one use case. |
+
+The key differentiator: if you want a meeting transcriber, use the daemon. If you want to build something else with desktop audio, import the packages.
 
 ---
 
 ## Open Questions
 
 1. **Name.** "Ghostwriter" is placeholder. Needs something that isn't already taken.
-2. **macOS audio capture permissions.** BlackHole requires setting up an aggregate audio device, which is a slightly confusing UX. Need to research if there's a cleaner path.
-3. **Browser meeting detection.** Knowing that Chrome is using the mic isn't quite enough to know it's Google Meet vs. a random website. Do we care? Probably not — if you're in a browser call, transcribe it.
-4. **Licensing.** MIT vs Apache 2.0. Leaning Apache 2.0 for patent protection.
-5. **Whisper model bundling.** The base model is ~150MB. Do we ship it in the binary or download on first run? First-run download is better for binary size but worse for "just works" experience.
+2. **Licensing.** MIT vs Apache 2.0. Leaning Apache 2.0 for patent protection.
+3. **Whisper model bundling.** The base model is ~150MB. Do we ship it in the binary or download on first run? First-run download is better for binary size but worse for "just works" experience.
+4. **Browser meeting detection.** Knowing that Chrome is using the mic isn't quite enough to know it's Google Meet vs. a random website. Do we care? Probably not — if you're in a browser call, transcribe it.

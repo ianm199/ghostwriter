@@ -4,7 +4,7 @@ Last updated: 2026-03-04
 
 ## What It Is
 
-A modular audio toolkit for desktop: system audio capture, application/microphone awareness, and local transcription. Ships as a meeting transcription daemon (`ghostwriter`) but the core primitives in `pkg/` are importable by any Go project.
+A modular desktop audio toolkit packaged as importable Go libraries. The core primitives — system audio capture, process/microphone awareness, and local transcription — live in `pkg/` and can be imported by any Go project. A meeting transcription daemon (`cmd/ghostwriter`) ships as the reference use case, built entirely on top of these libraries.
 
 ## Architecture
 
@@ -35,9 +35,10 @@ Storage: ~/Documents/Ghostwriter/{YYYY}/{MM}/{ID}.transcript.json
 ### audiocapture — System Audio Recording
 
 - `AudioRecorder` interface: `Start`, `Stop`, `IsRecording`
-- `Recorder` implementation: FFmpeg → BlackHole → 16kHz mono WAV
-- Auto-detects BlackHole device index from `ffmpeg -list_devices`
-- Graceful stop via SIGINT, validates output file
+- `SCKitRecorder` (default): native ScreenCaptureKit via cgo — zero external dependencies, can target specific apps by name
+- `Recorder` (fallback): FFmpeg → BlackHole → 16kHz mono WAV
+- Auto-detects backend: SCKit if available (macOS 12.3+), falls back to BlackHole
+- Includes 48kHz stereo → 16kHz mono resampling for Whisper-optimal output
 - macOS only (`//go:build darwin`)
 
 ### sysaware — System Awareness
@@ -97,16 +98,16 @@ log stream --predicate 'sender == "CoreAudio" && eventMessage contains "running:
 ```
 This is documented in `internal/daemon/DETECTION.md` but not implemented.
 
-### BlackHole Dependency
-Audio capture requires BlackHole virtual audio device installed and configured as an aggregate device. This is a manual setup step with no automation.
+### BlackHole Fallback
+The BlackHole audio backend requires the virtual audio device installed and configured as an aggregate device. SCKit (now the default) has no such dependency — it only needs Screen Recording permission.
 
 ### No Tests
 Zero test files in the codebase.
 
 ## What's Not Built
 
-### System Tray (internal/tray/)
-Stub file only. Planned: icon states (idle/recording/processing), menu for start/stop/status/open folder/quit.
+### Floating Widget (internal/tray/)
+Native AppKit floating panel (Loom-style pill). Shows status dot, label, and start/stop button. Polls daemon via Unix socket. Run with `ghostwriter tray`.
 
 ### Speaker Diarization
 `Speaker` struct exists in the transcript model but is never populated.
