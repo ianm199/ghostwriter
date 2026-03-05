@@ -29,7 +29,7 @@ type Daemon struct {
 	mu       sync.RWMutex
 	procs    sysaware.ProcessChecker
 	mic      sysaware.MicDetector
-	capture  *audiocapture.Recorder
+	capture  audiocapture.AudioRecorder
 	whisper  transcribe.Transcriber
 	store    *transcribe.Store
 	socket   *Socket
@@ -44,8 +44,9 @@ type ActiveMeeting struct {
 }
 
 type Config struct {
-	OutputDir string
-	ModelPath string
+	OutputDir    string
+	ModelPath    string
+	AudioBackend string
 }
 
 func New(cfg Config) (*Daemon, error) {
@@ -65,11 +66,21 @@ func New(cfg Config) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create control socket: %w", err)
 	}
 
+	backend := audiocapture.DetectBackend()
+	if cfg.AudioBackend != "" {
+		backend = audiocapture.Backend(cfg.AudioBackend)
+	}
+	rec, err := audiocapture.NewAudioRecorder(backend)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize audio backend %q: %w", backend, err)
+	}
+	log.Printf("audio backend: %s", backend)
+
 	return &Daemon{
 		state:   StateIdle,
 		procs:   sysaware.NewDarwinProcessChecker(),
 		mic:     sysaware.NewDarwinMicDetector(),
-		capture: audiocapture.NewRecorder(),
+		capture: rec,
 		whisper: w,
 		store:   transcribe.NewStore(cfg.OutputDir),
 		socket:  sock,
@@ -121,7 +132,7 @@ func (d *Daemon) handleMeetingSignal(sig Signal) {
 	switch sig.Type {
 	case SignalStarted:
 		if d.getState() == StateIdle {
-			if err := d.startRecording(sig.App); err != nil {
+			if err := d.startRecording(sig.App, sig.App); err != nil {
 				log.Printf("auto-record failed: %v", err)
 			}
 		}
@@ -136,7 +147,7 @@ func (d *Daemon) handleCommand(cmd Command) {
 	switch cmd.Type {
 	case CmdStartRecording:
 		if d.getState() == StateIdle {
-			if err := d.startRecording(cmd.Title); err != nil {
+			if err := d.startRecording("", cmd.Title); err != nil {
 				cmd.Reply <- Response{OK: false, Error: err.Error()}
 			} else {
 				cmd.Reply <- Response{OK: true}
@@ -159,11 +170,11 @@ func (d *Daemon) handleCommand(cmd Command) {
 	}
 }
 
-func (d *Daemon) startRecording(title string) error {
+func (d *Daemon) startRecording(app, title string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if err := d.capture.Start(); err != nil {
+	if err := d.capture.Start(audiocapture.CaptureTarget{AppName: app}); err != nil {
 		return fmt.Errorf("failed to start capture: %w", err)
 	}
 

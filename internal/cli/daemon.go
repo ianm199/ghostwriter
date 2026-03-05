@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"runtime"
 
 	"github.com/ianmclaughlin/ghostwriter/internal/daemon"
+	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
 	"github.com/spf13/cobra"
 )
 
@@ -11,15 +13,32 @@ var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the ghostwriter daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		runtime.LockOSThread()
+		audiocapture.EnsureAppInit()
+
+		backend, _ := cmd.Flags().GetString("audio-backend")
 		d, err := daemon.New(daemon.Config{
-			OutputDir: defaultOutputDir(),
-			ModelPath: defaultModelPath(),
+			OutputDir:    defaultOutputDir(),
+			ModelPath:    defaultModelPath(),
+			AudioBackend: backend,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to initialize daemon: %w", err)
 		}
-		return d.Run()
+
+		var runErr error
+		go func() {
+			runErr = d.Run()
+			audiocapture.QuitMainLoop()
+		}()
+
+		audiocapture.RunMainLoop()
+		return runErr
 	},
+}
+
+func init() {
+	startCmd.Flags().String("audio-backend", "", "audio capture backend: sckit, blackhole (auto-detected if empty)")
 }
 
 var stopCmd = &cobra.Command{
