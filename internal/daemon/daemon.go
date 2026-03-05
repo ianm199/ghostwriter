@@ -55,7 +55,8 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{
-		ModelPath: cfg.ModelPath,
+		ModelPath:  cfg.ModelPath,
+		MaxContext: 0,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize whisper: %w", err)

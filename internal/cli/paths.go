@@ -12,5 +12,26 @@ func defaultOutputDir() string {
 
 func defaultModelPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "ghostwriter", "models", "ggml-base.en.bin")
+	dir := filepath.Join(home, ".local", "share", "ghostwriter", "models")
+
+	preferred := []string{
+		"ggml-large-v3-turbo-q5_0.bin",
+		"ggml-large-v3-turbo.bin",
+		"ggml-large-v3.bin",
+		"ggml-medium.en.bin",
+		"ggml-medium.bin",
+		"ggml-small.en.bin",
+		"ggml-small.bin",
+		"ggml-base.en.bin",
+		"ggml-base.bin",
+		"ggml-tiny.en.bin",
+		"ggml-tiny.bin",
+	}
+	for _, name := range preferred {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return filepath.Join(dir, "ggml-base.en.bin")
 }

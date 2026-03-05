@@ -15,8 +15,15 @@ import (
 )
 
 type WhisperConfig struct {
-	ModelPath string
-	Language  string
+	ModelPath      string
+	Language       string
+	BeamSize       int
+	MaxContext     int
+	NoSpeechThold  float64
+	EntropyThold   float64
+	LogprobThold   float64
+	Temperature    float64
+	TemperatureInc float64
 }
 
 type WhisperTranscriber struct {
@@ -35,6 +42,21 @@ func NewWhisperTranscriber(config WhisperConfig) (*WhisperTranscriber, error) {
 	}
 	if config.Language == "" {
 		config.Language = "en"
+	}
+	if config.BeamSize == 0 {
+		config.BeamSize = 5
+	}
+	if config.NoSpeechThold == 0 {
+		config.NoSpeechThold = 0.5
+	}
+	if config.EntropyThold == 0 {
+		config.EntropyThold = 2.4
+	}
+	if config.LogprobThold == 0 {
+		config.LogprobThold = -1.0
+	}
+	if config.TemperatureInc == 0 {
+		config.TemperatureInc = 0.2
 	}
 
 	if _, err := os.Stat(config.ModelPath); os.IsNotExist(err) {
@@ -64,13 +86,23 @@ func (w *WhisperTranscriber) Transcribe(audio audiocapture.AudioData) (*Transcri
 func (w *WhisperTranscriber) TranscribeFile(path string) (*Transcript, error) {
 	outputPrefix := strings.TrimSuffix(path, filepath.Ext(path))
 
-	cmd := exec.Command(w.binaryPath,
+	args := []string{
 		"-m", w.config.ModelPath,
 		"-f", path,
 		"-l", w.config.Language,
 		"-ojf",
 		"-of", outputPrefix,
-	)
+		"--beam-size", fmt.Sprintf("%d", w.config.BeamSize),
+		"--no-speech-thold", fmt.Sprintf("%.2f", w.config.NoSpeechThold),
+		"--entropy-thold", fmt.Sprintf("%.1f", w.config.EntropyThold),
+		"--logprob-thold", fmt.Sprintf("%.1f", w.config.LogprobThold),
+		"--temperature", fmt.Sprintf("%.1f", w.config.Temperature),
+		"--temperature-inc", fmt.Sprintf("%.1f", w.config.TemperatureInc),
+		"--max-context", fmt.Sprintf("%d", w.config.MaxContext),
+		"--split-on-word",
+	}
+
+	cmd := exec.Command(w.binaryPath, args...)
 	cmdOutput, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("whisper-cli failed: %w\noutput: %s", err, string(cmdOutput))

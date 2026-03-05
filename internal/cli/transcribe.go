@@ -15,7 +15,8 @@ var transcribeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{
-			ModelPath: defaultModelPath(),
+			ModelPath:  defaultModelPath(),
+			MaxContext: 0,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to initialize whisper: %w", err)
