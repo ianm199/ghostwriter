@@ -24,4 +24,5 @@ func init() {
 	rootCmd.AddCommand(showCmd)
 	rootCmd.AddCommand(searchCmd)
 	rootCmd.AddCommand(modelsCmd)
+	rootCmd.AddCommand(trayCmd)
 }
