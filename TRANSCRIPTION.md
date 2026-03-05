@@ -21,11 +21,12 @@ This is a well-documented Whisper failure mode. It's solvable.
 
 Whisper is autoregressive — it generates one token at a time, conditioned on previous tokens. When the acoustic signal is weak (silence, background noise, low volume), the model has nothing to ground its predictions on. It falls back to its language model prior and latches onto whatever it just said, creating a self-reinforcing repetition loop.
 
-Three things made this worse for us:
+Four things made this worse for us:
 
 1. **`base` model (74M params)** — too small to reliably distinguish speech from non-speech on long audio. The single biggest factor.
 2. **No context break between segments** — by default, whisper conditions each 30-second window on the previous window's output. One hallucinated segment contaminates every subsequent segment.
 3. **No VAD preprocessing** — silence windows (pauses between speakers, muted periods) are fed directly to the model, which is exactly where hallucination starts.
+4. **No audio normalization** — system audio capture can produce low-amplitude, weird-stereo signals (OS mixer levels, Meet AGC, phase cancellation in downmix). Whisper sees a weak acoustic signal and freewheels into its language model prior.
 
 ---
 
@@ -47,16 +48,19 @@ ghostwriter models download large-v3-turbo-q5_0
 ghostwriter config set transcription.model large-v3-turbo-q5_0
 ```
 
-### Layer 2: Anti-Hallucination Flags
+### Layer 2: Audio Normalization
 
-The two most impactful whisper-cli flags:
+Before whisper sees audio, normalize it. System audio capture produces inconsistent levels (OS mixer, Meet AGC, stereo downmix artifacts). A basic RMS normalize + proper mono downmix reduces the "weak signal" condition that starts the loop.
+
+### Layer 3: Anti-Hallucination Flags
 
 | Flag | Why |
 |------|-----|
-| `--max-context 0` | Prevents hallucination cascade. Each 30s window starts fresh instead of conditioning on potentially-hallucinated previous output. |
-| `--temperature-inc 0.0` | Disables temperature fallback. When initial decoding fails quality checks, whisper normally retries at higher temperature — which produces even worse hallucinations. |
-
-Full recommended flag set:
+| `--max-context 0` | Prevents hallucination cascade between 30s windows. |
+| `--beam-size 5` | Better decoding quality than greedy (default). |
+| `--no-speech-thold 0.5` | Tightened from 0.6 — more aggressive at classifying silence as non-speech. Keep this even with VAD as a second guardrail, especially for low-level system audio noise. |
+| `--temperature 0.0` | Deterministic initial decoding. |
+| `--temperature-inc 0.2` | Allow one small fallback step rather than disabling entirely. The entropy/logprob thresholds are tied to fallback behavior — disabling it removes an escape hatch. The post-processing safety net catches bad retries anyway. |
 
 ```bash
 whisper-cli \
@@ -66,16 +70,21 @@ whisper-cli \
   --beam-size 5 \
   --max-context 0 \
   --temperature 0.0 \
-  --temperature-inc 0.0 \
+  --temperature-inc 0.2 \
   --entropy-thold 2.4 \
   --logprob-thold -1.0 \
-  --no-speech-thold 0.6 \
+  --no-speech-thold 0.5 \
   --split-on-word
 ```
 
-### Layer 3: VAD Preprocessing
+All of these should be config-driven so the daemon can evolve without code changes.
 
-whisper.cpp now has built-in Silero VAD support. This strips silence before transcription, removing the primary hallucination trigger entirely.
+### Layer 4: VAD Preprocessing
+
+Two complementary approaches — use both:
+
+1. **True VAD preprocessing** (Silero): cuts audio into speech-only spans before whisper sees it. This is the primary defense against silence-triggered hallucination.
+2. **In-decoder no-speech gating** (`--no-speech-thold`): skips segments where whisper predicts high no-speech probability. Catches residual noise that VAD passes through.
 
 ```bash
 whisper-cli \
@@ -89,11 +98,11 @@ whisper-cli \
 
 The Silero VAD model is tiny (<2 MB) and runs in <1ms per 32ms audio chunk on CPU.
 
-### Safety Net: Post-Processing
+### Layer 5: Post-Processing Safety Net
 
-As a last resort, detect and remove hallucinated segments after transcription:
+Detect and remove hallucinated segments after transcription:
 
-- **N-gram repetition**: if any 3-word sequence appears more than 3 times in a segment, flag it
+- **N-gram repetition**: if any 3-word sequence appears more than 3 times in a segment, flag it. Can also run a rolling window during segmented transcription to detect the loop as it starts and re-run just that 30s chunk with stricter settings.
 - **Compression ratio**: gzip the segment text — if compression ratio > 2.4, it's repetitive
 - **Confidence filtering**: drop segments where average log probability is below threshold
 
@@ -151,32 +160,38 @@ Record your own calls through the daemon. Add `save_audio` support so the raw WA
 
 ## Implementation Plan
 
-### Phase 1: Fix the Obvious (model + flags)
+### Phase 0: Baseline Benchmark
 
-- [ ] Download `large-v3-turbo-q5_0` model via `ghostwriter models download`
-- [ ] Update `WhisperTranscriber` to pass anti-hallucination flags: `--max-context 0`, `--temperature-inc 0.0`, `--beam-size 5`, `--split-on-word`
-- [ ] Make model selection configurable (currently hardcoded to `base`)
-- [ ] Re-transcribe the 2026-03-04 recording to verify improvement
+Before changing anything, establish a reproducible benchmark:
+
+- [ ] Download test audio with known transcripts (AMI meeting corpus or LibriSpeech test-clean)
+- [ ] Add `save_audio` option so real captured WAVs are kept for re-transcription
+- [ ] Run current pipeline (base model, no flags) against test audio, record WER and failure modes
+- [ ] This is the baseline everything gets measured against
+
+### Phase 1: Model + Flags + Normalization
+
+- [ ] Download `large-v3-turbo-q5_0` model
+- [ ] Add audio normalization (RMS normalize, proper mono downmix) before whisper sees the audio
+- [ ] Update `WhisperTranscriber` to pass anti-hallucination flags: `--max-context 0`, `--temperature-inc 0.2`, `--beam-size 5`, `--no-speech-thold 0.5`, `--split-on-word`
+- [ ] Make all transcription knobs config-driven (model, max_context, no_speech_thold, entropy_thold, logprob_thold, VAD thresholds)
+- [ ] Re-run benchmark, compare WER and hallucination rate against Phase 0 baseline
 
 ### Phase 2: VAD Integration
 
 - [ ] Download Silero VAD ONNX model and bundle with model management
 - [ ] Add `--vad` flags to whisper-cli invocation
-- [ ] Test on meeting audio with long silence stretches
+- [ ] Keep `--no-speech-thold` as a second guardrail for residual noise
+- [ ] Re-run benchmark, compare against Phase 1
 
-### Phase 3: Save Audio Option
+### Phase 3: Post-Processing Safety Net
 
-- [ ] Add `save_audio` option to daemon config
-- [ ] Copy WAV to output dir alongside `.transcript.json` before cleanup
-- [ ] Enables re-transcription with different models for comparison
-
-### Phase 4: Post-Processing Safety Net
-
-- [ ] Add n-gram repetition detection to transcript pipeline
+- [ ] Add n-gram repetition detection (rolling window during segmented transcription — detect loops as they start, re-run that chunk with stricter settings)
 - [ ] Add compression ratio check
-- [ ] Flag or remove hallucinated segments before writing final JSON
+- [ ] Confidence filtering on segment avg log probability
+- [ ] Re-run benchmark, confirm no regressions
 
-### Phase 5: Evaluate Parakeet
+### Phase 4: Evaluate Parakeet
 
 - [ ] Build parakeet.cpp on macOS
 - [ ] Benchmark against whisper large-v3-turbo on the same test audio

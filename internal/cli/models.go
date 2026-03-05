@@ -20,7 +20,9 @@ var models = map[string]string{
 	"small":      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
 	"medium.en":  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
 	"medium":     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
-	"large-v3":   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+	"large-v3":             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+	"large-v3-turbo":       "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+	"large-v3-turbo-q5_0": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
 }
 
 func modelsDir() string {
