@@ -1,2 +1,5 @@
 /ghostwriter
 .claude/
+build/
+testdata/audio/*.wav
+testdata/audio/*.json

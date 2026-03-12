@@ -10,6 +10,11 @@ func defaultOutputDir() string {
 	return filepath.Join(home, "Documents", "Ghostwriter")
 }
 
+func googleTokenPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "ghostwriter", "google-token.json")
+}
+
 func defaultModelPath() string {
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, ".local", "share", "ghostwriter", "models")

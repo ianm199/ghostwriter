@@ -17,10 +17,17 @@ var startCmd = &cobra.Command{
 		audiocapture.EnsureAppInit()
 
 		backend, _ := cmd.Flags().GetString("audio-backend")
+		saveAudio, _ := cmd.Flags().GetBool("save-audio")
+		transcriptionBackend, _ := cmd.Flags().GetString("transcription-backend")
+		diarize, _ := cmd.Flags().GetBool("diarize")
 		d, err := daemon.New(daemon.Config{
-			OutputDir:    defaultOutputDir(),
-			ModelPath:    defaultModelPath(),
-			AudioBackend: backend,
+			OutputDir:            defaultOutputDir(),
+			ModelPath:            defaultModelPath(),
+			AudioBackend:         backend,
+			TranscriptionBackend: transcriptionBackend,
+			SaveAudio:            saveAudio,
+			Diarize:              diarize,
+			GoogleTokenPath:      googleTokenPath(),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to initialize daemon: %w", err)
@@ -39,6 +46,9 @@ var startCmd = &cobra.Command{
 
 func init() {
 	startCmd.Flags().String("audio-backend", "", "audio capture backend: sckit, blackhole (auto-detected if empty)")
+	startCmd.Flags().Bool("save-audio", false, "save raw WAV audio alongside transcripts")
+	startCmd.Flags().String("transcription-backend", "local", "transcription backend: local, assemblyai, openai")
+	startCmd.Flags().Bool("diarize", false, "enable speaker diarization")
 }
 
 var stopCmd = &cobra.Command{

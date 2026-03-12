@@ -1,6 +1,6 @@
 # Ghostwriter — Project Status
 
-Last updated: 2026-03-04
+Last updated: 2026-03-05
 
 ## What It Is
 
@@ -52,7 +52,12 @@ Storage: ~/Documents/Ghostwriter/{YYYY}/{MM}/{ID}.transcript.json
 ### transcribe — Transcription & Storage
 
 - `Transcriber` interface: `Transcribe(AudioData)`, `TranscribeFile(path)`, `Close()`
-- `WhisperTranscriber`: shells out to `whisper-cli`, parses JSON output
+- `Backend` type + `TranscriberConfig` + `NewTranscriber()` factory for pluggable backends
+- Three backends:
+  - `WhisperTranscriber` (`local`): shells out to `whisper-cli`, parses JSON output. Anti-hallucination flags (beam-size 5, max-context 0, temperature 0, VAD via Silero)
+  - `AssemblyAITranscriber` (`assemblyai`): pure `net/http` REST — upload → submit (with speaker labels) → poll. 10-min timeout. Speaker diarization included
+  - `OpenAITranscriber` (`openai`): multipart POST to `whisper-1` with `verbose_json` + word timestamps. 25MB file size pre-check. No diarization (API limitation)
+- API keys resolved from environment variables (`ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY`) at startup
 - `Transcript`, `Metadata`, `Segment`, `Word`, `Speaker` data model
 - `Store`: filesystem persistence with date-organized directories
 - Full-text search across all transcripts
@@ -73,11 +78,11 @@ Tested live: Google Meet in Chrome detected after mic active for 10s. Slack idle
 
 | Command | Status |
 |---|---|
-| `ghostwriter start` | Working — starts daemon |
+| `ghostwriter start` | Working — starts daemon (supports `--transcription-backend`) |
 | `ghostwriter stop` | Working — graceful shutdown via IPC |
 | `ghostwriter status` | Working — shows state + meeting duration |
 | `ghostwriter record start/stop` | Working — manual recording control |
-| `ghostwriter transcribe <file>` | Working — standalone transcription |
+| `ghostwriter transcribe <file>` | Working — standalone transcription (supports `--transcription-backend`) |
 | `ghostwriter list [--since]` | Working — lists transcripts |
 | `ghostwriter show <id>` | Working — prints transcript text |
 | `ghostwriter search <query>` | Working — full-text search |
@@ -122,7 +127,7 @@ Designed in SPEC.md. Would enrich transcript metadata with meeting titles, atten
 All settings hardcoded. SPEC.md describes `~/.config/ghostwriter/config.toml`.
 
 ### Remote Transcription Backends
-`Transcriber` interface exists but only Whisper is implemented.
+AssemblyAI and OpenAI backends implemented. Deepgram, Gladia, and custom HTTP endpoint backends are not.
 
 ### Cross-Platform
 macOS only. No Windows (WASAPI) or Linux (PipeWire) implementations of `ProcessChecker`, `MicDetector`, or `AudioRecorder`.
@@ -142,8 +147,10 @@ No Homebrew formula, CI/CD, or installers.
 | `pkg/sysaware/mic_darwin.go` | macOS CoreAudio mic state |
 | `pkg/transcribe/transcript.go` | Transcript data model |
 | `pkg/transcribe/store.go` | Filesystem storage + search |
-| `pkg/transcribe/transcriber.go` | Transcriber interface |
-| `pkg/transcribe/whisper.go` | Whisper.cpp integration |
+| `pkg/transcribe/transcriber.go` | Transcriber interface, Backend type, factory |
+| `pkg/transcribe/whisper.go` | Whisper.cpp integration (local backend) |
+| `pkg/transcribe/assemblyai.go` | AssemblyAI cloud backend |
+| `pkg/transcribe/openai.go` | OpenAI Whisper API backend |
 | `internal/cli/root.go` | CLI framework |
 | `internal/cli/daemon.go` | start/stop/status commands |
 | `internal/cli/record.go` | Manual recording commands |
@@ -175,6 +182,6 @@ No Homebrew formula, CI/CD, or installers.
 | **1. Core Loop** | Daemon, capture, transcription, output, CLI | Done |
 | **2. Detection** | Process monitoring, mic confirmation, auto-record | Done |
 | **2.5. Modular Toolkit** | Extract pkg/audiocapture, sysaware, transcribe | Done |
-| **3. Quality & MCP** | Diarization, MCP server, remote backends, search | Partial (search done) |
+| **3. Quality & MCP** | Diarization, MCP server, remote backends, search | Partial (search done, AssemblyAI + OpenAI backends done) |
 | **4. Cross-Platform** | Windows, Linux, CI/CD, packaging | Not started |
 | **5. Polish** | Calendar, webhooks, plugins, tray UI, docs site | Not started |

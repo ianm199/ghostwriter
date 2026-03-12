@@ -24,6 +24,9 @@ type WhisperConfig struct {
 	LogprobThold   float64
 	Temperature    float64
 	TemperatureInc float64
+	VADModelPath   string
+	VADThreshold   float64
+	VADMinSilence  int
 }
 
 type WhisperTranscriber struct {
@@ -57,6 +60,19 @@ func NewWhisperTranscriber(config WhisperConfig) (*WhisperTranscriber, error) {
 	}
 	if config.TemperatureInc == 0 {
 		config.TemperatureInc = 0.2
+	}
+	if config.VADThreshold == 0 {
+		config.VADThreshold = 0.5
+	}
+	if config.VADMinSilence == 0 {
+		config.VADMinSilence = 500
+	}
+	if config.VADModelPath == "" {
+		dir := filepath.Dir(config.ModelPath)
+		candidate := filepath.Join(dir, "ggml-silero-vad.bin")
+		if _, err := os.Stat(candidate); err == nil {
+			config.VADModelPath = candidate
+		}
 	}
 
 	if _, err := os.Stat(config.ModelPath); os.IsNotExist(err) {
@@ -100,6 +116,14 @@ func (w *WhisperTranscriber) TranscribeFile(path string) (*Transcript, error) {
 		"--temperature-inc", fmt.Sprintf("%.1f", w.config.TemperatureInc),
 		"--max-context", fmt.Sprintf("%d", w.config.MaxContext),
 		"--split-on-word",
+	}
+	if w.config.VADModelPath != "" {
+		args = append(args,
+			"--vad",
+			"--vad-model", w.config.VADModelPath,
+			"--vad-threshold", fmt.Sprintf("%.2f", w.config.VADThreshold),
+			"--vad-min-silence-duration-ms", fmt.Sprintf("%d", w.config.VADMinSilence),
+		)
 	}
 
 	cmd := exec.Command(w.binaryPath, args...)

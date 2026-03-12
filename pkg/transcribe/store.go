@@ -137,6 +137,12 @@ func (s *Store) Search(query string) ([]SearchResult, error) {
 	return results, err
 }
 
+func (s *Store) AudioPath(t *Transcript) string {
+	year := t.Metadata.Date.Format("2006")
+	month := t.Metadata.Date.Format("01")
+	return filepath.Join(s.dir, year, month, t.ID+".wav")
+}
+
 func (s *Store) findByID(id string) (string, error) {
 	var found string
 	err := filepath.Walk(s.dir, func(path string, info os.FileInfo, err error) error {

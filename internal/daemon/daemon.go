@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/ianmclaughlin/ghostwriter/pkg/audiocapture"
+	"github.com/ianmclaughlin/ghostwriter/pkg/calendar"
+	"github.com/ianmclaughlin/ghostwriter/pkg/pidlock"
 	"github.com/ianmclaughlin/ghostwriter/pkg/sysaware"
 	"github.com/ianmclaughlin/ghostwriter/pkg/transcribe"
 )
@@ -25,28 +27,38 @@ const (
 )
 
 type Daemon struct {
-	state    State
-	mu       sync.RWMutex
-	procs    sysaware.ProcessChecker
-	mic      sysaware.MicDetector
-	capture  audiocapture.AudioRecorder
-	whisper  transcribe.Transcriber
-	store    *transcribe.Store
-	socket   *Socket
-	meeting  *ActiveMeeting
-	done     chan struct{}
+	state       State
+	mu          sync.RWMutex
+	procs       sysaware.ProcessChecker
+	mic         sysaware.MicDetector
+	capture     audiocapture.AudioRecorder
+	transcriber transcribe.Transcriber
+	store       *transcribe.Store
+	socket      *Socket
+	calendar    calendar.CalendarSource
+	meeting     *ActiveMeeting
+	saveAudio   bool
+	done        chan struct{}
 }
 
 type ActiveMeeting struct {
-	ID        string
-	Title     string
-	StartedAt time.Time
+	ID              string
+	Title           string
+	StartedAt       time.Time
+	DetectedApp     string
+	CalendarEventID string
+	Attendees       []string
+	Source          string
 }
 
 type Config struct {
-	OutputDir    string
-	ModelPath    string
-	AudioBackend string
+	OutputDir            string
+	ModelPath            string
+	AudioBackend         string
+	TranscriptionBackend string
+	SaveAudio            bool
+	Diarize              bool
+	GoogleTokenPath      string
 }
 
 func New(cfg Config) (*Daemon, error) {
@@ -54,12 +66,24 @@ func New(cfg Config) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	w, err := transcribe.NewWhisperTranscriber(transcribe.WhisperConfig{
-		ModelPath:  cfg.ModelPath,
-		MaxContext: 0,
-	})
+	tcfg := transcribe.TranscriberConfig{
+		Backend: transcribe.Backend(cfg.TranscriptionBackend),
+		Whisper: transcribe.WhisperConfig{
+			ModelPath:  cfg.ModelPath,
+			MaxContext: 0,
+		},
+		Diarize: cfg.Diarize,
+	}
+	switch tcfg.Backend {
+	case transcribe.BackendAssemblyAI:
+		tcfg.APIKey = os.Getenv("ASSEMBLYAI_API_KEY")
+	case transcribe.BackendOpenAI:
+		tcfg.APIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	t, err := transcribe.NewTranscriber(tcfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize whisper: %w", err)
+		return nil, fmt.Errorf("failed to initialize transcriber: %w", err)
 	}
 
 	sock, err := NewSocket()
@@ -67,25 +91,39 @@ func New(cfg Config) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create control socket: %w", err)
 	}
 
-	backend := audiocapture.DetectBackend()
+	audioBackend := audiocapture.DetectBackend()
 	if cfg.AudioBackend != "" {
-		backend = audiocapture.Backend(cfg.AudioBackend)
+		audioBackend = audiocapture.Backend(cfg.AudioBackend)
 	}
-	rec, err := audiocapture.NewAudioRecorder(backend)
+	rec, err := audiocapture.NewAudioRecorder(audioBackend)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize audio backend %q: %w", backend, err)
+		return nil, fmt.Errorf("failed to initialize audio backend %q: %w", audioBackend, err)
 	}
-	log.Printf("audio backend: %s", backend)
+	log.Printf("audio backend: %s", audioBackend)
+
+	var cal calendar.CalendarSource
+	if cfg.GoogleTokenPath != "" {
+		store := calendar.NewTokenStore(cfg.GoogleTokenPath)
+		gc, err := calendar.NewGoogleCalendar(store, calendar.DefaultOAuthCredentials())
+		if err != nil {
+			log.Printf("calendar disabled: %v", err)
+		} else {
+			cal = gc
+			log.Println("google calendar integration active")
+		}
+	}
 
 	return &Daemon{
-		state:   StateIdle,
-		procs:   sysaware.NewDarwinProcessChecker(),
-		mic:     sysaware.NewDarwinMicDetector(),
-		capture: rec,
-		whisper: w,
-		store:   transcribe.NewStore(cfg.OutputDir),
-		socket:  sock,
-		done:    make(chan struct{}),
+		state:       StateIdle,
+		procs:       sysaware.NewDarwinProcessChecker(),
+		mic:         sysaware.NewDarwinMicDetector(),
+		capture:     rec,
+		transcriber: t,
+		store:       transcribe.NewStore(cfg.OutputDir),
+		socket:      sock,
+		calendar:    cal,
+		saveAudio:   cfg.SaveAudio,
+		done:        make(chan struct{}),
 	}, nil
 }
 
@@ -94,10 +132,14 @@ func (d *Daemon) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := writePIDFile(); err != nil {
+	pid := pidlock.New("ghostwriter")
+	if err := pid.Check(); err != nil {
 		return err
 	}
-	defer removePIDFile()
+	if err := pid.Acquire(); err != nil {
+		return err
+	}
+	defer pid.Release()
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -105,12 +147,20 @@ func (d *Daemon) Run() error {
 	meetings := startMeetingDetector(ctx, d.procs, d.mic)
 	commands := d.socket.Listen(ctx)
 
+	var calendarEvents <-chan CalendarState
+	var currentCalEvent *calendar.Event
+	if d.calendar != nil {
+		calendarEvents = startCalendarPoller(ctx, d.calendar)
+	}
+
 	log.Println("ghostwriter daemon started")
 
 	for {
 		select {
 		case signal := <-meetings:
-			d.handleMeetingSignal(signal)
+			d.handleMeetingSignal(signal, currentCalEvent)
+		case calState := <-calendarEvents:
+			currentCalEvent = calState.CurrentEvent
 		case cmd := <-commands:
 			d.handleCommand(cmd)
 		case <-signals:
@@ -129,11 +179,24 @@ func (d *Daemon) Run() error {
 	}
 }
 
-func (d *Daemon) handleMeetingSignal(sig Signal) {
+func (d *Daemon) handleMeetingSignal(sig Signal, calEvent *calendar.Event) {
 	switch sig.Type {
 	case SignalStarted:
 		if d.getState() == StateIdle {
-			if err := d.startRecording(sig.App, sig.App); err != nil {
+			title := sig.App
+			source := "detection"
+			var calendarEventID string
+			var attendees []string
+
+			if calEvent != nil && calEvent.MeetingURL != "" {
+				title = calEvent.Title
+				calendarEventID = calEvent.ID
+				attendees = calEvent.Attendees
+				source = "calendar"
+				log.Printf("enriching with calendar event: %s", calEvent.Title)
+			}
+
+			if err := d.startRecording(sig.App, title, source, calendarEventID, attendees); err != nil {
 				log.Printf("auto-record failed: %v", err)
 			}
 		}
@@ -148,7 +211,7 @@ func (d *Daemon) handleCommand(cmd Command) {
 	switch cmd.Type {
 	case CmdStartRecording:
 		if d.getState() == StateIdle {
-			if err := d.startRecording("", cmd.Title); err != nil {
+			if err := d.startRecording("", cmd.Title, "manual", "", nil); err != nil {
 				cmd.Reply <- Response{OK: false, Error: err.Error()}
 			} else {
 				cmd.Reply <- Response{OK: true}
@@ -165,13 +228,19 @@ func (d *Daemon) handleCommand(cmd Command) {
 		}
 	case CmdStatus:
 		cmd.Reply <- d.statusResponse()
+	case CmdListTranscripts:
+		d.handleListTranscripts(cmd)
+	case CmdGetTranscript:
+		d.handleGetTranscript(cmd)
+	case CmdListEvents:
+		d.handleListEvents(cmd)
 	case CmdStop:
 		cmd.Reply <- Response{OK: true}
 		close(d.done)
 	}
 }
 
-func (d *Daemon) startRecording(app, title string) error {
+func (d *Daemon) startRecording(app, title, source, calendarEventID string, attendees []string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -181,9 +250,13 @@ func (d *Daemon) startRecording(app, title string) error {
 
 	id := transcribe.GenerateID()
 	d.meeting = &ActiveMeeting{
-		ID:        id,
-		Title:     title,
-		StartedAt: time.Now(),
+		ID:              id,
+		Title:           title,
+		StartedAt:       time.Now(),
+		DetectedApp:     app,
+		CalendarEventID: calendarEventID,
+		Attendees:       attendees,
+		Source:          source,
 	}
 	d.state = StateRecording
 	log.Printf("recording started: %s", id)
@@ -207,11 +280,10 @@ func (d *Daemon) stopRecording() {
 	}
 
 	go func() {
-		defer os.Remove(wavPath)
-
-		transcript, err := d.whisper.TranscribeFile(wavPath)
+		transcript, err := d.transcriber.TranscribeFile(wavPath)
 		if err != nil {
 			log.Printf("transcription failed: %v", err)
+			os.Remove(wavPath)
 			d.mu.Lock()
 			d.state = StateIdle
 			d.meeting = nil
@@ -223,6 +295,10 @@ func (d *Daemon) stopRecording() {
 		transcript.Metadata.Title = meeting.Title
 		transcript.Metadata.Date = meeting.StartedAt
 		transcript.Metadata.DurationSeconds = int(time.Since(meeting.StartedAt).Seconds())
+		transcript.Metadata.Source = meeting.Source
+		transcript.Metadata.DetectedApp = meeting.DetectedApp
+		transcript.Metadata.CalendarEventID = meeting.CalendarEventID
+		transcript.Metadata.Attendees = meeting.Attendees
 
 		if err := d.store.Write(transcript); err != nil {
 			log.Printf("failed to write transcript: %v", err)
@@ -230,11 +306,97 @@ func (d *Daemon) stopRecording() {
 			log.Printf("transcript written: %s", meeting.ID)
 		}
 
+		if d.saveAudio {
+			audioDest := d.store.AudioPath(transcript)
+			if err := copyFile(wavPath, audioDest); err != nil {
+				log.Printf("failed to save audio: %v", err)
+			} else {
+				log.Printf("audio saved: %s", audioDest)
+			}
+		}
+		os.Remove(wavPath)
+
 		d.mu.Lock()
 		d.state = StateIdle
 		d.meeting = nil
 		d.mu.Unlock()
 	}()
+}
+
+func (d *Daemon) handleListTranscripts(cmd Command) {
+	limit := cmd.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	transcripts, err := d.store.List(time.Time{})
+	if err != nil {
+		cmd.Reply <- Response{OK: false, Error: err.Error()}
+		return
+	}
+
+	if len(transcripts) > limit {
+		transcripts = transcripts[:limit]
+	}
+
+	summaries := make([]TranscriptSummary, len(transcripts))
+	for i, t := range transcripts {
+		summaries[i] = TranscriptSummary{
+			ID:              t.ID,
+			Title:           t.Metadata.Title,
+			Date:            t.Metadata.Date.Format(time.RFC3339),
+			DurationSeconds: t.Metadata.DurationSeconds,
+			Source:          t.Metadata.Source,
+		}
+	}
+
+	cmd.Reply <- Response{OK: true, Transcripts: summaries}
+}
+
+func (d *Daemon) handleGetTranscript(cmd Command) {
+	t, err := d.store.Get(cmd.ID)
+	if err != nil {
+		cmd.Reply <- Response{OK: false, Error: err.Error()}
+		return
+	}
+
+	detail := &TranscriptDetail{
+		ID:              t.ID,
+		Title:           t.Metadata.Title,
+		Date:            t.Metadata.Date.Format(time.RFC3339),
+		DurationSeconds: t.Metadata.DurationSeconds,
+		FullText:        t.FullText,
+		Source:          t.Metadata.Source,
+	}
+
+	cmd.Reply <- Response{OK: true, Transcript: detail}
+}
+
+func (d *Daemon) handleListEvents(cmd Command) {
+	if d.calendar == nil {
+		cmd.Reply <- Response{OK: true, Events: []EventInfo{}}
+		return
+	}
+
+	now := time.Now()
+	events, err := d.calendar.Events(now, now.Add(24*time.Hour))
+	if err != nil {
+		cmd.Reply <- Response{OK: false, Error: err.Error()}
+		return
+	}
+
+	infos := make([]EventInfo, len(events))
+	for i, e := range events {
+		infos[i] = EventInfo{
+			ID:         e.ID,
+			Title:      e.Title,
+			Start:      e.Start.Format(time.RFC3339),
+			End:        e.End.Format(time.RFC3339),
+			MeetingURL: e.MeetingURL,
+		}
+	}
+
+	cmd.Reply <- Response{OK: true, Events: infos}
 }
 
 func (d *Daemon) getState() State {
@@ -255,14 +417,14 @@ func (d *Daemon) statusResponse() Response {
 	return resp
 }
 
-func pidFilePath() string {
-	return filepath.Join(os.TempDir(), "ghostwriter.pid")
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
 }
 
-func writePIDFile() error {
-	return os.WriteFile(pidFilePath(), []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
-}
-
-func removePIDFile() {
-	os.Remove(pidFilePath())
-}

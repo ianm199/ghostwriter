@@ -8,11 +8,13 @@ package tray
 */
 import "C"
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -25,6 +27,17 @@ const (
 	stateRecording  = 2
 	stateProcessing = 3
 )
+
+var (
+	panelOpen   bool
+	panelMu     sync.Mutex
+	panelTicker *time.Ticker
+	panelDone   chan struct{}
+)
+
+func Setup() {
+	C.TrayBridgeSetup()
+}
 
 func Run() {
 	runtime.LockOSThread()
@@ -76,9 +89,33 @@ func goTrayOnOpenTranscripts() {
 	}()
 }
 
+//export goTrayOnTogglePanel
+func goTrayOnTogglePanel() {
+	panelMu.Lock()
+	wasOpen := panelOpen
+	panelOpen = !panelOpen
+	panelMu.Unlock()
+
+	C.TrayBridgeTogglePanel()
+
+	if !wasOpen {
+		go fetchPanelData()
+		go startPanelRefresh()
+	} else {
+		stopPanelRefresh()
+	}
+}
+
+//export goTrayOnSelectTranscript
+func goTrayOnSelectTranscript(transcriptID *C.char) {
+	id := C.GoString(transcriptID)
+	go fetchTranscriptDetail(id)
+}
+
 //export goTrayOnQuit
 func goTrayOnQuit() {
 	go func() {
+		stopPanelRefresh()
 		C.TrayBridgeQuit()
 	}()
 }
@@ -128,4 +165,99 @@ func setStatus(text string, state int) {
 	cs := C.CString(text)
 	C.TrayBridgeUpdateStatus(cs, C.int(state))
 	C.free(unsafe.Pointer(cs))
+}
+
+func fetchPanelData() {
+	client, err := daemon.NewClient()
+	if err != nil {
+		log.Printf("tray: panel fetch connect failed: %v", err)
+		return
+	}
+	transcripts, err := client.ListTranscripts(20)
+	client.Close()
+	if err != nil {
+		log.Printf("tray: list transcripts failed: %v", err)
+	} else {
+		data, _ := json.Marshal(transcripts)
+		cs := C.CString(string(data))
+		C.TrayBridgeUpdateTranscripts(cs)
+		C.free(unsafe.Pointer(cs))
+	}
+
+	evClient, err := daemon.NewClient()
+	if err != nil {
+		log.Printf("tray: panel fetch connect failed: %v", err)
+		return
+	}
+	events, err := evClient.ListEvents()
+	evClient.Close()
+	if err != nil {
+		log.Printf("tray: list events failed: %v", err)
+	} else {
+		data, _ := json.Marshal(events)
+		cs := C.CString(string(data))
+		C.TrayBridgeUpdateEvents(cs)
+		C.free(unsafe.Pointer(cs))
+	}
+}
+
+func fetchTranscriptDetail(id string) {
+	client, err := daemon.NewClient()
+	if err != nil {
+		log.Printf("tray: detail fetch connect failed: %v", err)
+		return
+	}
+	defer client.Close()
+
+	detail, err := client.GetTranscript(id)
+	if err != nil {
+		log.Printf("tray: get transcript failed: %v", err)
+		return
+	}
+
+	data, _ := json.Marshal(detail)
+	cs := C.CString(string(data))
+	C.TrayBridgeShowTranscriptDetail(cs)
+	C.free(unsafe.Pointer(cs))
+}
+
+func startPanelRefresh() {
+	panelMu.Lock()
+	if panelTicker != nil {
+		panelMu.Unlock()
+		return
+	}
+	panelTicker = time.NewTicker(30 * time.Second)
+	panelDone = make(chan struct{})
+	ticker := panelTicker
+	done := panelDone
+	panelMu.Unlock()
+
+	for {
+		select {
+		case <-ticker.C:
+			panelMu.Lock()
+			open := panelOpen
+			panelMu.Unlock()
+			if !open {
+				return
+			}
+			fetchPanelData()
+		case <-done:
+			return
+		}
+	}
+}
+
+func stopPanelRefresh() {
+	panelMu.Lock()
+	defer panelMu.Unlock()
+	if panelTicker != nil {
+		panelTicker.Stop()
+		panelTicker = nil
+	}
+	if panelDone != nil {
+		close(panelDone)
+		panelDone = nil
+	}
 }

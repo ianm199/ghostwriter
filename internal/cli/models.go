@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ianmclaughlin/ghostwriter/pkg/diarize"
 	"github.com/spf13/cobra"
 )
 
@@ -41,30 +42,51 @@ var modelsListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir := modelsDir()
 
+		fmt.Println("Whisper models:")
 		for name := range models {
 			path := filepath.Join(dir, "ggml-"+name+".bin")
 			status := "not downloaded"
 			if info, err := os.Stat(path); err == nil {
 				status = fmt.Sprintf("downloaded (%dMB)", info.Size()/1024/1024)
 			}
-			fmt.Printf("  %-12s %s\n", name, status)
+			fmt.Printf("  %-25s %s\n", name, status)
 		}
+
+		fmt.Println("\nDiarization models:")
+		segStatus := "not downloaded"
+		if info, err := os.Stat(diarize.DefaultSegmentationModelPath()); err == nil {
+			segStatus = fmt.Sprintf("downloaded (%dMB)", info.Size()/1024/1024)
+		}
+		fmt.Printf("  %-25s %s\n", "segmentation (pyannote)", segStatus)
+
+		embStatus := "not downloaded"
+		if info, err := os.Stat(diarize.DefaultEmbeddingModelPath()); err == nil {
+			embStatus = fmt.Sprintf("downloaded (%dMB)", info.Size()/1024/1024)
+		}
+		fmt.Printf("  %-25s %s\n", "embedding (3dspeaker)", embStatus)
+
 		return nil
 	},
 }
 
 var modelsDownloadCmd = &cobra.Command{
 	Use:   "download [model]",
-	Short: "Download a whisper model",
+	Short: "Download a whisper or diarization model",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
+
+		if name == "diarize" {
+			return diarize.EnsureModels()
+		}
+
 		url, ok := models[name]
 		if !ok {
-			available := make([]string, 0, len(models))
+			available := make([]string, 0, len(models)+1)
 			for k := range models {
 				available = append(available, k)
 			}
+			available = append(available, "diarize")
 			return fmt.Errorf("unknown model %q — available: %s", name, strings.Join(available, ", "))
 		}
 

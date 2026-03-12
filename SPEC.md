@@ -104,13 +104,13 @@ type Transcriber interface {
     Close() error
 }
 
-type WhisperCLITranscriber struct { /* model path, params */ }
+type WhisperCLITranscriber struct { /* model path, params */ }  // ✅ Implemented
+type AssemblyAITranscriber struct { /* api key */ }             // ✅ Implemented (with diarization)
+type OpenAITranscriber struct { /* api key, model */ }          // ✅ Implemented
 
-type OpenAITranscriber struct { /* api key, model */ }
-type DeepgramTranscriber struct { /* api key */ }
-type GladiaTranscriber struct { /* api key */ }
-
-type CustomTranscriber struct { /* arbitrary HTTP endpoint */ }
+type DeepgramTranscriber struct { /* api key */ }               // Not implemented
+type GladiaTranscriber struct { /* api key */ }                 // Not implemented
+type CustomTranscriber struct { /* arbitrary HTTP endpoint */ }  // Not implemented
 ```
 
 Default ships with `whisper-base.en` for speed. Users can download larger models (`whisper-large-v3`) for better accuracy. The CLI handles model management:
